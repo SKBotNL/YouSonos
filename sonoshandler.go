@@ -37,7 +37,7 @@ type Envelope struct {
 
 var invidiousBaseUrl = "https://invidious.namazso.eu"
 
-func sonosHandler(ytUrl string) (int, string, error) {
+func sonosHandler(ytUrl string) (int, string, string, error) {
 	u, _ := url.Parse(selectedDevice.Host)
 	u.Path = "/MediaRenderer/AVTransport/Control"
 
@@ -54,7 +54,7 @@ func sonosHandler(ytUrl string) (int, string, error) {
 
 	title, audioStream, thumbnail, lengthSeconds, ytId, err := getYtData(ytUrl)
 	if err != nil {
-		return 0, "", err
+		return 0, "", "", err
 	}
 
 	id := len(redirMap) + 1
@@ -78,7 +78,7 @@ func sonosHandler(ytUrl string) (int, string, error) {
 
 	req, err := http.NewRequest("POST", u.String(), bytes.NewReader([]byte(body)))
 	if err != nil {
-		return 0, "", err
+		return 0, "", "", err
 	}
 
 	req.Header.Set("Content-Type", "text/xml; charset=\"utf8\"")
@@ -86,11 +86,11 @@ func sonosHandler(ytUrl string) (int, string, error) {
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return 0, "", err
+		return 0, "", "", err
 	}
 	defer resp.Body.Close()
 
-	return lengthSeconds, ytId, nil
+	return lengthSeconds, ytId, title, nil
 }
 
 func createMetaData(audioUri string, title string, artUri string) string {

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -16,6 +17,7 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/driver/desktop"
@@ -44,6 +46,7 @@ var sliderValue int
 var selectedDevice Device
 var sonosDevices = make(map[string]string)
 var channel = make(chan bool)
+var playing = false
 
 func main() {
 	go redirector()
@@ -67,12 +70,14 @@ func main() {
 		resp, err := http.Get(loc)
 		if err != nil {
 			dialog.ShowError(err, w)
+			break
 		}
 		defer resp.Body.Close()
 
 		bodyBytes, err := io.ReadAll(resp.Body)
 		if err != nil {
 			dialog.ShowError(err, w)
+			break
 		}
 
 		root := Root{}
@@ -80,11 +85,13 @@ func main() {
 		err = xml.Unmarshal(bodyBytes, &root)
 		if err != nil {
 			dialog.ShowError(err, w)
+			break
 		}
 
 		u, err := url.Parse(loc)
 		if err != nil {
 			dialog.ShowError(err, w)
+			break
 		}
 
 		host := u.Host
@@ -93,9 +100,14 @@ func main() {
 	}
 
 	if activeDevice != "" {
+		host, ok := sonosDevices[activeDevice]
+		if !ok {
+			dialog.NewError(errors.New("could not find selected device"), w)
+		}
+
 		selectedDevice = Device{
 			Name: activeDevice,
-			Host: "http://" + sonosDevices[activeDevice],
+			Host: "http://" + host,
 		}
 	}
 
@@ -166,60 +178,126 @@ func main() {
 		volumeLabel.Refresh()
 	}
 
-	goButton := widget.NewButton("Go", func() {
+	goButton := widget.NewButton("Go", nil)
+
+	playButton := widget.NewButtonWithIcon("", theme.MediaPlayIcon(), nil)
+	playButton.OnTapped = func() {
 		if (Device{}) == selectedDevice {
 			dialog.ShowInformation("No device selected", "Go to the settings to select a device", w)
 			return
 		}
 
-		songSeconds, _, err = sonosHandler(input.Text)
+		if playing {
+			tick = false
+			playing = false
+			err := pause()
+			if err != nil {
+				dialog.ShowError(err, w)
+				return
+			}
+			playButton.Icon = theme.MediaPlayIcon()
+			playButton.Refresh()
+		} else {
+			if slider.Value >= float64(songSeconds) {
+				slider.Value = 0
+				globalSeconds = 0
+			}
+			tick = true
+			playing = true
+			err := play()
+			if err != nil {
+				dialog.ShowError(err, w)
+				return
+			}
+			playButton.Icon = theme.MediaPauseIcon()
+			playButton.Refresh()
+		}
+	}
+	// pauseButton := widget.NewButton("Pause", func() {
+	// 	if (Device{}) == selectedDevice {
+	// 		dialog.ShowInformation("No device selected", "Go to the settings to select a device", w)
+	// 		return
+	// 	}
+	// })
+
+	stopButton := widget.NewButtonWithIcon("", theme.MediaStopIcon(), nil)
+
+	settingsButton := widget.NewButton("Settings", func() {
+		openSettings(a, *slider, *positionLabel)
+	})
+
+	playingLabel := widget.NewLabel("Nothing is playing")
+
+	image := canvas.NewImageFromResource(resourceEmptythumbnailPng)
+	image.SetMinSize(fyne.NewSize(200, 200))
+	image.FillMode = canvas.ImageFillContain
+
+	// sliderHBox := container.NewHBox(slider, positionLabel)
+	playingCenter := container.NewCenter(playingLabel)
+	videoBorder := container.NewBorder(nil, playingCenter, nil, nil, image)
+	buttonsBox := container.NewHBox(playButton, stopButton)
+	buttonsCenter := container.NewCenter(buttonsBox)
+	// buttonsBorder := container.NewBorder(nil, nil, playButton, stopButton)
+	imageBorder := container.NewBorder(videoBorder, buttonsCenter, nil, nil)
+
+	inputBorder := container.NewBorder(nil, nil, nil, goButton, input)
+	sliderBorder := container.NewBorder(nil, nil, nil, positionLabel, slider)
+	volumeBorder := container.NewBorder(nil, nil, widget.NewIcon(theme.MediaMusicIcon()), volumeLabel, volumeSlider)
+
+	content := container.NewVBox(imageBorder, inputBorder, settingsButton, sliderBorder, volumeBorder)
+
+	goButton.OnTapped = func() {
+		if (Device{}) == selectedDevice {
+			dialog.ShowInformation("No device selected", "Go to the settings to select a device", w)
+			return
+		}
+
+		id := ""
+		title := ""
+		songSeconds, id, title, err = sonosHandler(input.Text)
 		if err != nil {
 			dialog.ShowError(err, w)
 			return
 		}
-		err := play()
+
+		go func() {
+			readcloser, err := loadData(id)
+			if err != nil {
+				dialog.NewError(err, w)
+			}
+
+			defer readcloser.Close()
+
+			image = canvas.NewImageFromReader(readcloser.(io.Reader), "maxresdefault.jpg")
+			image.SetMinSize(fyne.NewSize(200, 200))
+			image.FillMode = canvas.ImageFillContain
+
+			videoBorder := container.NewBorder(nil, playingCenter, nil, nil, image)
+			imageBorder := container.NewBorder(videoBorder, buttonsCenter, nil, nil)
+			content = container.NewVBox(imageBorder, inputBorder, settingsButton, sliderBorder, volumeBorder)
+
+			w.SetContent(content)
+		}()
+
+		err = play()
 		if err != nil {
 			dialog.ShowError(err, w)
 			return
 		}
+
+		playingLabel.Text = title
+		playingLabel.Refresh()
+		playButton.Icon = theme.MediaPauseIcon()
+		playButton.Refresh()
 
 		slider.Max = float64(songSeconds)
 		slider.Value = 0
 		globalSeconds = 0
 		tick = true
-	})
+		playing = true
+	}
 
-	playButton := widget.NewButton("Play", func() {
-		if (Device{}) == selectedDevice {
-			dialog.ShowInformation("No device selected", "Go to the settings to select a device", w)
-			return
-		}
-
-		if slider.Value >= float64(songSeconds) {
-			slider.Value = 0
-			globalSeconds = 0
-		}
-		tick = true
-		err := play()
-		if err != nil {
-			dialog.ShowError(err, w)
-			return
-		}
-	})
-	pauseButton := widget.NewButton("Pause", func() {
-		if (Device{}) == selectedDevice {
-			dialog.ShowInformation("No device selected", "Go to the settings to select a device", w)
-			return
-		}
-
-		tick = false
-		err := pause()
-		if err != nil {
-			dialog.ShowError(err, w)
-			return
-		}
-	})
-	stopButton := widget.NewButton("Stop", func() {
+	stopButton.OnTapped = func() {
 		if (Device{}) == selectedDevice {
 			dialog.ShowInformation("No device selected", "Go to the settings to select a device", w)
 			return
@@ -229,26 +307,36 @@ func main() {
 		slider.Value = 0
 		globalSeconds = 0
 		slider.Refresh()
-		tick = false
+
 		positionLabel.Text = "00:00:00"
 		positionLabel.Refresh()
+
+		playing = false
+		playButton.Icon = theme.MediaPlayIcon()
+		playButton.Refresh()
+
+		playingLabel.Text = "Nothing is playing"
+		playingLabel.Refresh()
+
+		go func() {
+			image = canvas.NewImageFromResource(resourceEmptythumbnailPng)
+			image.SetMinSize(fyne.NewSize(200, 200))
+			image.FillMode = canvas.ImageFillContain
+
+			videoBorder := container.NewBorder(nil, playingCenter, nil, nil, image)
+			imageBorder := container.NewBorder(videoBorder, buttonsCenter, nil, nil)
+			content = container.NewVBox(imageBorder, inputBorder, settingsButton, sliderBorder, volumeBorder)
+
+			w.SetContent(content)
+		}()
+
+		tick = false
 		err := stop()
 		if err != nil {
 			dialog.ShowError(err, w)
 			return
 		}
-	})
-	settingsButton := widget.NewButton("Settings", func() {
-		openSettings(a, *slider, *positionLabel)
-	})
-
-	// sliderHBox := container.NewHBox(slider, positionLabel)
-	//imageBorder := container.NewBorder(image, nil, nil, nil)
-	inputBorder := container.NewBorder(nil, nil, nil, goButton, input)
-	sliderBorder := container.NewBorder(nil, nil, nil, positionLabel, slider)
-	volumeBorder := container.NewBorder(nil, nil, widget.NewIcon(theme.MediaMusicIcon()), volumeLabel, volumeSlider)
-
-	content := container.NewVBox(inputBorder, playButton, pauseButton, stopButton, settingsButton, sliderBorder, volumeBorder)
+	}
 
 	w.SetContent(content)
 
@@ -414,4 +502,19 @@ func searchDevices() ([]http.Header, error) {
 	}
 
 	return devices, nil
+}
+
+func loadData(id string) (io.ReadCloser, error) {
+	ytimg := fmt.Sprintf("https://i.ytimg.com/vi/%s/maxresdefault.jpg", id)
+	req, err := http.NewRequest("GET", ytimg, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+
+	return resp.Body, nil
 }
