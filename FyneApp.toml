@@ -4,9 +4,3 @@
   ID = "nl.skbotnl.yousonos"
   Version = "1.0.0"
   Build = 1
-
-[Development]
-  HelperText = "This binary was build with debug symbols"
-
-[Release]
-  HelperText = "This binary was build without debug symbols"
